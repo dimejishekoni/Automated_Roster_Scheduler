@@ -1262,22 +1262,61 @@ def assign_victoria_duties(victoria_staff, cfg, include_night=False):
 
     return staff, unassigned
 
-
-# ================= Example =================
+# ================= MAIN EXECUTION BLOCK =================
 if __name__ == "__main__":
-    cfg = GridConfig(start_hour=5, end_hour=25, start_column=6, blocks_per_hour=4)
-    pdf_path = "/workspaces/project/victoria/2025.10.25 VSOU SOS.pdf"
-    target_date = "Monday20October2025"   # or dynamically build from a datetime
-    rows = extract_victoria_rows_from_text(pdf_path, target_date) 
-    victoria = build_staff_from_pdf_rows(rows)
-    victoria, district, cardinal = split_by_duty_section(victoria)
-    print("Victoria:", len(victoria))
-    print("District:", len(district))
-    print("Cardinal:", len(cardinal))
-    out = build_single_sheet(
-        "one_sheet_three_sections.xlsx",
-        victoria, district, cardinal,
-        cfg,
-        rows_per_section=(30, 24, 20)  # tune per your needs
-    )
-    print("Saved:", out)
+    import sys
+    
+# 1. Setup Defaults (for testing without Excel)
+    default_pdf = "2025.10.25 VSOU SOS.pdf"
+    default_date = "Monday20October2025" # Fallback if no date provided
+
+    # 2. Get Arguments from Excel
+    # sys.argv[1] = PDF Path
+    # sys.argv[2] = Target Date String
+    
+    if len(sys.argv) > 1:
+        pdf_path = sys.argv[1]
+    else:
+        pdf_path = default_pdf
+
+    if len(sys.argv) > 2:
+        target_date = sys.argv[2]
+    else:
+        target_date = default_date
+
+    # 3. Define Output Path
+    # We will name the file based on the date so you don't overwrite old rosters
+    output_dir = os.path.dirname(pdf_path) if os.path.exists(pdf_path) else "."
+    
+    # Sanitize date for filename (remove spaces/slashes)
+    safe_date = "".join(c for c in target_date if c.isalnum())
+    output_path = os.path.join(output_dir, f"Roster_{safe_date}.xlsx")
+
+    print(f"--- Roster Generator ---")
+    print(f"PDF: {pdf_path}")
+    print(f"Date: {target_date}")
+    
+    # 4. Run Extraction Logic
+    # Pass the user's date to the extractor
+    rows = extract_victoria_rows_from_text(pdf_path, date_str=target_date) 
+    
+    if not rows:
+        print(f"No rows found for date: {target_date}")
+        print("Please check the date format matches the PDF (e.g. 'Monday 20 October 2025')")
+    else:
+        victoria_raw = build_staff_from_pdf_rows(rows)
+        victoria, district, cardinal = split_by_duty_section(victoria_raw)
+        
+        # Print stats for debugging
+        print(f"Found {len(victoria)} Vic, {len(district)} Dist, {len(cardinal)} Card")
+
+        cfg = GridConfig(start_hour=5, end_hour=25, start_column=6, blocks_per_hour=4)
+        
+        # Build the file
+        saved_file = build_single_sheet(
+            output_path, 
+            victoria, district, cardinal,
+            cfg,
+            rows_per_section=(30, 24, 20)
+        )
+        print(f"Success! Saved to: {saved_file}")
