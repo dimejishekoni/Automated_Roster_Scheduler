@@ -2,7 +2,7 @@ name: Build Windows Exe
 
 on:
   push:
-    branches: [ "main", "master" ]
+    branches: [ "main", "master", "project_branch"]
   workflow_dispatch:
 
 jobs:
@@ -25,7 +25,7 @@ jobs:
     - name: Build with PyInstaller
       run: |
         # Make sure your script name matches here!
-        pyinstaller --onefile /workspaces/project/victoria/excel_auto_schedule.py
+        pyinstaller --onefile excel_auto_schedule.py
 
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
