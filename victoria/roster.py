@@ -7,7 +7,22 @@ from collections import defaultdict
 import pdfplumber
 from pathlib import Path
 import re
+# Add this near your other imports
+from assign_scheduler import (
+    RosterEngine, 
+    assign_victoria_duties_v2, 
+    GridConfig, 
+    DUTY_PRIORITY,
+    _block_index_start,
+    _block_index_end,
+    _block_index_start_inclusive,
+    _duration_minutes,
+    _to_minutes_since_start,
+    hhmm_to_minutes, 
+    minutes_to_hhmm, STATUS_OFF, STATUS_GATELINE, STATUS_BREAK, STATUS_CSSI, STATUS_SECURITY,
+    STATUS_SPECIALIST, STATUS_GENERAL
 
+)
 
 DUTY_PRIORITY = {
     "P3":          1,
@@ -17,8 +32,15 @@ DUTY_PRIORITY = {
     "SATS EB":     4,
     "ESCALATOR":   5,
     "VIP/MIP":     6,
-    "SECURITY":    7,
+    "SECURITY":    1,
 }
+
+# Duty Specific Colors
+COLOR_BREAK   = "60497A"  # Dark Purple (User requested)
+COLOR_CSSI    = "9966FF"  # Light Purple (User requested)
+COLOR_DUTY   = "FFC000"  # Orange/Gold (for PTI/SATS)
+COLOR_SECURITY = "C00101"  # Yellow (for Security/VIP)
+COLOR_GENERAL= "FFFF00"  # Yellow (for Security/VIP)
 
 # ================= Palettes (deep/light per section) =================
 PALETTES = {
@@ -81,17 +103,6 @@ DUTY_SECTION_MAP = {
     "BN35": "Cardinal",
     # add / change as needed
 }
-
-# ---------- tiny helpers ----------
-def hhmm_to_minutes(hhmm: str) -> int:
-    h, m = map(int, hhmm.split(":"))
-    return h * 60 + m
-
-def minutes_to_hhmm(m: int) -> str:
-    m %= 24 * 60
-    h = m // 60
-    mm = m % 60
-    return f"{h:02d}:{mm:02d}"
 
 def clean_merge_area(ws, min_row, min_col, max_row, max_col):
     """
@@ -223,6 +234,47 @@ def extract_victoria_rows_from_text(pdf_path: str, date_str: str | None = None):
 
     return rows
 
+# def build_staff_from_pdf_rows(rows):
+#     victoria = []
+
+#     for row in rows:
+#         if not row or len(row) < 5:
+#             continue
+
+#         duty_code = (row[0] or "").strip()
+#         duty_desc = (row[1] or "").strip()
+#         start_val = (row[2] or "").strip()
+#         end_val   = (row[3] or "").strip()
+#         name_val  = (row[4] or "").strip()
+
+#         # ---- filters ----
+#         # Only Victoria station duties: descriptions starting with 'VIC'
+#         if not duty_desc.startswith("VIC"):
+#             continue
+
+#         # Ignore supervisors / managers (CSS/CSM)
+#         # In the PDF these appear as 'VICCSS...' or 'VICCSM...'
+#         if "CSS" in duty_desc or "CSM" in duty_desc:
+#             continue
+
+#         # (We also don't want GPK but those are filtered out by the "VIC " test)
+
+#         grade    = _parse_grade(duty_desc)      # CSA1 / CSA2 or None
+#         start_str = _excel_time_to_str(start_val)
+#         end_str   = _excel_time_to_str(end_val)
+
+#         staff_entry = {
+#             "id": duty_code,
+#             "name": name_val,
+#             "radio": "",
+#             "start_time": start_str,
+#             "finish_time": end_str,
+#             "grade": grade,
+#             "duty_desc": duty_desc,
+#         }
+#         victoria.append(staff_entry)
+
+#     return victoria
 def build_staff_from_pdf_rows(rows):
     victoria = []
 
@@ -236,17 +288,18 @@ def build_staff_from_pdf_rows(rows):
         end_val   = (row[3] or "").strip()
         name_val  = (row[4] or "").strip()
 
-        # ---- filters ----
-        # Only Victoria station duties: descriptions starting with 'VIC'
-        if not duty_desc.startswith("VIC"):
+        # ---- UPDATED FILTERS ----
+        
+        # 1. Filter out Green Park (GPK)
+        # We explicitly block anything starting with GPK
+        if duty_desc.startswith("GPK"):
             continue
 
-        # Ignore supervisors / managers (CSS/CSM)
-        # In the PDF these appear as 'VICCSS...' or 'VICCSM...'
+        # 2. Filter out Supervisors / Managers (CSS/CSM)
         if "CSS" in duty_desc or "CSM" in duty_desc:
             continue
 
-        # (We also don't want GPK but those are filtered out by the "VIC " test)
+        # -------------------------
 
         grade    = _parse_grade(duty_desc)      # CSA1 / CSA2 or None
         start_str = _excel_time_to_str(start_val)
@@ -265,19 +318,60 @@ def build_staff_from_pdf_rows(rows):
 
     return victoria
 
-def split_by_duty_section(victoria_raw: list[dict]):
-    """
-    Take all VIC duties and split into (victoria, district, cardinal)
-    based on the duty code using DUTY_SECTION_MAP.
-    """
-    victoria: list[dict] = []
-    district: list[dict] = []
-    cardinal: list[dict] = []
+# def split_by_duty_section(victoria_raw: list[dict]):
+#     """
+#     Take all VIC duties and split into (victoria, district, cardinal)
+#     based on the duty code using DUTY_SECTION_MAP.
+#     """
+#     victoria: list[dict] = []
+#     district: list[dict] = []
+#     cardinal: list[dict] = []
 
-    for s in victoria_raw:
-        code = s.get("id", "")
-        section = DUTY_SECTION_MAP.get(code, "Victoria")  # default to Victoria
+#     for s in victoria_raw:
+#         code = s.get("id", "")
+#         section = DUTY_SECTION_MAP.get(code, "Victoria")  # default to Victoria
 
+#         if section == "Victoria":
+#             victoria.append(s)
+#         elif section == "District":
+#             district.append(s)
+#         elif section == "Cardinal":
+#             cardinal.append(s)
+#         else:
+#             # unknown label – you can log it if you want
+#             victoria.append(s)
+
+#     # optional: sort by start time in each section
+#     for lst in (victoria, district, cardinal):
+#         lst.sort(key=lambda x: x["start_time"])
+
+#     return victoria, district, cardinal
+
+def split_by_duty_section(staff_list: list[dict]):
+    """
+    Splits the staff list into 3 sections based STRICTLY on DUTY_SECTION_MAP.
+    """
+    victoria = []
+    district = []
+    cardinal = []
+
+    print(f"DEBUG: Splitting {len(staff_list)} staff using the Map...")
+
+    for s in staff_list:
+        # 1. Get the ID (Clean it up just in case)
+        raw_id = s.get("id", "")
+        code = raw_id.strip().upper()
+        
+        # 2. PRIORITY 1: Look up in your Map
+        # We default to None so we know if it was found or not
+        section = DUTY_SECTION_MAP.get(code)
+        
+        # 3. PRIORITY 2: Fallback (Only if ID is missing from map)
+        if not section:
+            print(f"  > WARNING: Duty ID '{code}' not found in Map! Defaulting to Victoria.")
+            section = "Victoria"
+
+        # 4. Sort into lists
         if section == "Victoria":
             victoria.append(s)
         elif section == "District":
@@ -285,72 +379,16 @@ def split_by_duty_section(victoria_raw: list[dict]):
         elif section == "Cardinal":
             cardinal.append(s)
         else:
-            # unknown label – you can log it if you want
+            # Handle unexpected map values (e.g. typos in the map itself)
+            print(f"  > ERROR: Map returned unknown section '{section}' for '{code}'.")
             victoria.append(s)
 
-    # optional: sort by start time in each section
+    # 5. Sort each section by Start Time
     for lst in (victoria, district, cardinal):
         lst.sort(key=lambda x: x["start_time"])
 
+    print(f"DEBUG: Split Results -> Vic: {len(victoria)}, Dist: {len(district)}, Card: {len(cardinal)}")
     return victoria, district, cardinal
-
-
-# ================= Grid Config =================
-class GridConfig:
-    def __init__(
-        self,
-        start_hour=5,           # 05:00
-        end_hour=25,            # 01:00 next day (covers 00:00)
-        start_column=6,         # F
-        blocks_per_hour=4,      # 4 columns per hour (15-min blocks)
-        meta_col_widths=(5.6, 8, 8, 14.5, 6.2),   # widths A..E
-    ):
-        self.start_hour = start_hour
-        self.end_hour = end_hour
-        self.start_column = start_column
-        self.blocks_per_hour = blocks_per_hour
-        self.meta_col_widths = meta_col_widths
-
-    @property
-    def minutes_per_block(self): return 60 // self.blocks_per_hour
-
-    @property
-    def total_hours(self): return self.end_hour - self.start_hour
-
-    @property
-    def total_blocks(self): return self.total_hours * self.blocks_per_hour
-
-
-# ================= Helpers: time mapping =================
-def _to_minutes_since_start(hhmm: str, cfg: GridConfig) -> int:
-    h, m = map(int, hhmm.split(":"))
-    s = cfg.start_hour % 24
-    if h < s:  # 00:xx => next day
-        h += 24
-    return max(0, (h - cfg.start_hour) * 60 + m)
-
-def _block_index_start(hhmm: str, cfg: GridConfig) -> int:
-    # step-in: round start UP
-    return int(math.ceil(_to_minutes_since_start(hhmm, cfg) / cfg.minutes_per_block))
-
-def _block_index_end(hhmm: str, cfg: GridConfig, round_finish="ceil") -> int:
-    mins = _to_minutes_since_start(hhmm, cfg)
-    if round_finish == "floor":
-        return int(mins // cfg.minutes_per_block)
-    return int(math.ceil(mins / cfg.minutes_per_block))
-
-def _block_index_start_inclusive(hhmm: str, cfg: GridConfig) -> int:
-    # Uses FLOOR to ensure that if a shift starts at 05:05, 
-    # it INCLUDES the 05:00-05:15 block.
-    mins = _to_minutes_since_start(hhmm, cfg)
-    return int(mins // cfg.minutes_per_block) # floor
-
-def _duration_minutes(start_hhmm: str, finish_hhmm: str, cfg: GridConfig) -> int:
-    ms = _to_minutes_since_start(start_hhmm, cfg)
-    me = _to_minutes_since_start(finish_hhmm, cfg)
-    if me <= ms:
-        me += 24 * 60
-    return me - ms
 
 def calculate_hourly_counts(all_staff_lists, cfg: GridConfig):
     """
@@ -496,58 +534,147 @@ def draw_clean_grid(ws, row_start: int, row_end: int, cfg: GridConfig, hour_line
             #Apply the Grey Fill
             # c.fill = empty_fill
 
+def paint_shift(ws, row: int, section: str, s: dict, cfg: GridConfig):
+    if not s: return
 
-def paint_shift(ws, row: int, section: str, start_hhmm: str, finish_hhmm: str, grade: str | None, cfg: GridConfig):
-    """Paint per 15-min block using section palette + grade/duration colour rule."""
-    fill_rgb = choose_fill_color(section, grade, start_hhmm, finish_hhmm, cfg)
-    fill = PatternFill(fill_type="solid", start_color=fill_rgb, end_color=fill_rgb)
+    # --- SETUP COLORS ---
+    base_rgb = choose_fill_color(section, s.get("grade"), s["start_time"], s["finish_time"], cfg)
+    base_fill = PatternFill(fill_type="solid", start_color=base_rgb, end_color=base_rgb)
+    
+    # User Requested Hex Codes
+    break_fill   = PatternFill("solid", start_color=COLOR_BREAK)  # 60497A
+    cssi_fill    = PatternFill("solid", start_color=COLOR_CSSI)   # 9966FF
+    special_fill = PatternFill("solid", start_color=COLOR_DUTY)
+    security_fill = PatternFill("solid", start_color=COLOR_SECURITY) # Red
+    general_fill = PatternFill("solid", start_color=COLOR_GENERAL)
+    
+    # Fonts
+    white_font = Font(size=8, bold=True, color="FFFFFF")
+    black_font = Font(size=8, bold=True, color="000000")
 
-    s_blk = _block_index_start(start_hhmm, cfg)
-    e_blk = _block_index_end(finish_hhmm, cfg, round_finish="ceil")
-    if e_blk <= s_blk:
-        e_blk += cfg.total_blocks
+    # --- GET MATRICES ---
+    matrix = s.get("status_matrix")
+    text_matrix = s.get("text_matrix") 
 
-    s_col = cfg.start_column + max(0, s_blk)
-    e_col_excl = cfg.start_column + min(e_blk, cfg.total_blocks)
-    for col in range(s_col, e_col_excl):
-        ws.cell(row=row, column=col).fill = fill
+    if matrix:
+        for b in range(cfg.total_blocks):
+            col = cfg.start_column + b
+            
+            if b < len(matrix):
+                status = matrix[b]
+                cell = ws.cell(row=row, column=col)
+                
+                # Apply Color & FORCE Text based on Status
+                if status == STATUS_GATELINE:
+                    cell.fill = base_fill
+                    
+                elif status == STATUS_BREAK:
+                    cell.fill = break_fill
+                    cell.font = white_font
+                    cell.value = "Meal Break"   # <--- Hardcoded Fallback
+                    cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+                    
+                elif status == STATUS_CSSI:
+                    cell.fill = cssi_fill
+                    cell.font = white_font # White looks good on 9966FF
+                    cell.value = "CSSI"         # <--- Hardcoded Fallback
+                    cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+                
+                elif status == STATUS_SECURITY:
+                    cell.fill = security_fill
+                    cell.font = black_font
+                    cell.value = "Security Check"
+                    cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+
+                    
+                elif status == STATUS_SPECIALIST:
+                    cell.fill = special_fill
+                    
+                elif status == STATUS_GENERAL:
+                    cell.fill = general_fill
+                
+                # If specific text exists (e.g. from Scheduler), overwrite the default
+                if text_matrix and b < len(text_matrix) and text_matrix[b]:
+                    cell.value = text_matrix[b]
+                    cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+
+    else:
+        # Fallback for staff without matrix
+        s_blk = _block_index_start(s["start_time"], cfg)
+        e_blk = _block_index_end(s["finish_time"], cfg, round_finish="ceil")
+        if e_blk <= s_blk: e_blk += cfg.total_blocks
+        s_col = cfg.start_column + max(0, s_blk)
+        e_col_excl = cfg.start_column + min(e_blk, cfg.total_blocks)
+        for col in range(s_col, e_col_excl):
+            if col > 0: ws.cell(row=row, column=col).fill = base_fill
 
 def merge_painted_segments_per_hour(ws, row: int, cfg: GridConfig):
-    """Within each hour (4 cells), merge contiguous painted runs of length ≥2 and center."""
+    """
+    Scans each hour (4 blocks).
+    Merges contiguous blocks ONLY if they have the same Color and Text.
+    This allows a 30m Break (Blue) and 30m CSSI (Purple) to exist in the same hour slot.
+    """
     hour_side = Side(border_style="thin", color="000000")
     grey = Side(border_style="thin", color="000000")
-    center = Alignment(horizontal="center", vertical="center")
+    center = Alignment(horizontal="center", vertical="center", wrap_text=True) # Ensure wrap text
 
     for h in range(cfg.total_hours):
         c0 = cfg.start_column + h * cfg.blocks_per_hour
-        c1 = c0 + cfg.blocks_per_hour - 1
+        c_end_of_hour = c0 + cfg.blocks_per_hour - 1
 
-        painted = []
-        for col in range(c0, c1 + 1):
-            f = ws.cell(row=row, column=col).fill
-            painted.append(f is not None and f.fill_type == "solid")
+        # We will scan the 4 blocks in this hour
+        # and identify "runs" of identical content.
+        
+        current_run_start = c0
+        
+        # Iterate through the blocks of this hour (c0, c0+1, c0+2, c0+3)
+        # We go up to c_end_of_hour + 1 to handle the "end of loop" logic
+        for col in range(c0, c_end_of_hour + 2):
+            
+            # 1. Get properties of the Current Cell (if within bounds)
+            if col <= c_end_of_hour:
+                curr_cell = ws.cell(row=row, column=col)
+                curr_fill = curr_cell.fill.start_color.rgb if (curr_cell.fill and curr_cell.fill.fill_type=="solid") else None
+                curr_text = curr_cell.value
+            else:
+                # Sentinel (past the end of the hour) to force the last run to close
+                curr_fill = "SENTINEL"
+                curr_text = "SENTINEL"
 
-        if not any(painted):
-            continue
+            # 2. Get properties of the Start of the Current Run
+            start_cell = ws.cell(row=row, column=current_run_start)
+            start_fill = start_cell.fill.start_color.rgb if (start_cell.fill and start_cell.fill.fill_type=="solid") else None
+            start_text = start_cell.value
 
-        run_start = None
-        for idx in range(cfg.blocks_per_hour + 1):  # sentinel
-            is_painted = painted[idx] if idx < cfg.blocks_per_hour else False
-            if is_painted and run_start is None:
-                run_start = idx
-            elif (not is_painted) and run_start is not None:
-                run_end = idx - 1
-                run_len = run_end - run_start + 1
-                if run_len >= 2:
-                    m0 = c0 + run_start
-                    m1 = c0 + run_end
-                    ws.merge_cells(f"{get_column_letter(m0)}{row}:{get_column_letter(m1)}{row}")
-                    tl = ws.cell(row=row, column=m0)
+            # 3. Check for MISMATCH (Change in Color or Text)
+            # If color changed OR text changed, we must close the previous run and start a new one.
+            is_match = (curr_fill == start_fill) and (curr_text == start_text)
+            
+            if not is_match:
+                # The run has ended at the previous column (col - 1)
+                run_end = col - 1
+                run_length = run_end - current_run_start + 1
+                
+                # Only merge if we have a valid painted run of 2 or more blocks
+                if run_length >= 2 and start_fill is not None:
+                    
+                    # Perform Merge
+                    ws.merge_cells(start_row=row, start_column=current_run_start, end_row=row, end_column=run_end)
+                    
+                    # Apply Formatting to the new merged block
+                    tl = ws.cell(row=row, column=current_run_start)
                     tl.alignment = center
-                    left  = hour_side if m0 == c0 else None
-                    right = hour_side if m1 == c1 else None
-                    tl.border = Border(left=left, right=right, top=grey, bottom=grey)
-                run_start = None
+                    
+                    # Borders:
+                    # Left = Thin (Hour line) ONLY if it touches the start of the hour
+                    # Right = Thin (Hour line) ONLY if it touches the end of the hour
+                    left_border = hour_side if current_run_start == c0 else None
+                    right_border = hour_side if run_end == c_end_of_hour else None
+                    
+                    tl.border = Border(left=left_border, right=right_border, top=grey, bottom=grey)
+
+                # Start new run from current column
+                current_run_start = col
 
 # ================= NEW Helper: Draw Bold Outline =================
 def draw_section_outline(ws, row_start, row_end, cfg, top_style="thick"):
@@ -765,11 +892,6 @@ def fill_gaps_grey(ws, start_row: int, end_row: int, cfg: GridConfig):
         for b in range(cfg.total_blocks):
             col = cfg.start_column + b
             cell = ws.cell(row=r, column=col)
-            
-            # Check if cell has a fill. 
-            # OpenPyXL cells usually have a fill object, checking start_color is safer.
-            # If it's '000000' or None, it's empty.
-            # (Standard default fill is often type='none' or color '000000')
             
             has_color = False
             if cell.fill and cell.fill.fill_type == "solid":
@@ -996,8 +1118,7 @@ def build_single_sheet(
                 ws[f"E{r}"] = s.get("radio", "")
                 
                 # PAINT the shift bars only if staff exists
-                paint_shift(ws, r, section_name, s["start_time"], s["finish_time"], 
-                            s.get("grade"), cfg)
+                paint_shift(ws, r, section_name, s, cfg)
                 merge_painted_segments_per_hour(ws, r, cfg)
             else:
                 # EMPTY SLOT
@@ -1065,138 +1186,6 @@ def build_single_sheet(
     wb.save(path)
     return path
 
-def generate_victoria_duty_slots_full(
-    open_time="05:00",
-    close_time="00:00",
-    include_night=False,
-):
-    """
-    Build ALL duty slots for a 'normal' day at Victoria (single date).
-    Returns a list of:
-      {
-        'label': str,         # text to show in the cell (e.g. "Security Check", "PTI EB")
-        'role': str,          # logical role (SECURITY, PTI, SATS, ESCALATOR, VIP, P3)
-        'start': int,         # minutes since midnight
-        'end': int,
-        'required_grade': 'CSA1' | 'ANY',
-        'priority': int,      # lower = scheduled first
-      }
-
-    Assumptions:
-      - Times are for a Mon–Thu style “normal” day (station closes at 00:00).
-      - Security checks: hourly from open to close (or 24h if include_night=True).
-      - PTI EB/WB: 07:30–23:00, 1h blocks, CSA1 only.
-      - SATS EB/WB: 07–09 & 17–19, 1h blocks, CSA1 only, WB has higher priority.
-      - P3 (Victoria northbound): 07:30–09:00 & 17–19, 1h blocks, CSA1 only.
-      - Top of ESC 4–6: 07:00–23:00, 1h blocks, any grade.
-      - VIP/MIP: 07:00–22:00, 1h blocks, any grade (continuous coverage).
-    """
-    slots = []
-
-    def add_slot(label, role, start_min, end_min, grade_req="ANY"):
-        slots.append(
-            {
-                "label": label,
-                "role": role,
-                "start": start_min,
-                "end": end_min,
-                "required_grade": grade_req,
-                "priority": DUTY_PRIORITY[role],
-            }
-        )
-
-    # ----- time base -----
-    open_min = hhmm_to_minutes(open_time)
-    close_min = hhmm_to_minutes(close_time)
-    if close_min <= open_min:
-        close_min += 24 * 60  # treat as after midnight
-
-    # ---------- 1) SECURITY CHECKS ----------
-    # Every hour from open to close (or all 24h if include_night=True)
-    if include_night:
-        sec_start = 0
-        sec_end = 24 * 60
-    else:
-        sec_start = open_min
-        sec_end = close_min
-
-    t = sec_start
-    while t + 60 <= sec_end:
-        add_slot("Security Check", "SECURITY", t, t + 60, grade_req="ANY")
-        t += 60
-
-    # ---------- 2) TOP OF ESC 4–6 ----------
-    # 07:00–23:00, 1h blocks
-    esc_start = hhmm_to_minutes("07:00")
-    esc_end = hhmm_to_minutes("23:00")
-    if esc_end <= esc_start:
-        esc_end += 24 * 60
-
-    t = esc_start
-    while t + 60 <= esc_end:
-        add_slot("TOP OF ESC 4-6", "ESCALATOR", t, t + 60, grade_req="ANY")
-        t += 60
-
-    # ---------- 3) PTI WB / EB ----------
-    # 07:30–23:00, 1h blocks, CSA1 only, both directions
-    pti_start = hhmm_to_minutes("07:30")
-    pti_end = hhmm_to_minutes("23:00")
-    if pti_end <= pti_start:
-        pti_end += 24 * 60
-
-    t = pti_start
-    while t + 60 <= pti_end:
-        add_slot("PTI WB", "PTI WB", t, t + 60, grade_req="CSA1")
-        add_slot("PTI EB", "PTI EB", t, t + 60, grade_req="CSA1")
-        t += 60
-
-    # ---------- 4) SATS WB / EB ----------
-    # Traffic windows 07–09 and 17–19, CSA1 only.
-    # WB has higher priority (role names give different PRIORITY).
-    sats_windows = [("07:00", "09:00"), ("17:00", "19:00")]
-
-    for start_str, end_str in sats_windows:
-        w_start = hhmm_to_minutes(start_str)
-        w_end = hhmm_to_minutes(end_str)
-        if w_end <= w_start:
-            w_end += 24 * 60
-
-        t = w_start
-        while t + 60 <= w_end:
-            # Prioritise WB by giving it role "SATS WB" (higher priority)
-            add_slot("SATS WB", "SATS WB", t, t + 60, grade_req="CSA1")
-            add_slot("SATS EB", "SATS EB", t, t + 60, grade_req="CSA1")
-            t += 60
-
-    # ---------- 5) VIP/MIP ----------
-    # All-day coverage-ish: 07:00–22:00, 1h blocks, any grade
-    vip_start = hhmm_to_minutes("07:00")
-    vip_end = hhmm_to_minutes("22:00")
-    if vip_end <= vip_start:
-        vip_end += 24 * 60
-
-    t = vip_start
-    while t + 60 <= vip_end:
-        add_slot("VIP/MIP", "VIP/MIP", t, t + 60, grade_req="ANY")
-        t += 60
-
-    # ---------- 6) P3 (Victoria NB platform) ----------
-    # 07:30–09:00 & 17:00–19:00, 1h blocks, CSA1 only
-    p3_windows = [("07:30", "09:00"), ("17:00", "19:00")]
-    for start_str, end_str in p3_windows:
-        p_start = hhmm_to_minutes(start_str)
-        p_end = hhmm_to_minutes(end_str)
-        if p_end <= p_start:
-            p_end += 24 * 60
-
-        t = p_start
-        while t + 60 <= p_end:
-            add_slot("P3", "P3", t, t + 60, grade_req="CSA1")
-            t += 60
-
-    # final sort: by start, then priority (P3, PTI, SATS WB, SATS EB, ESC, VIP, SEC)
-    slots.sort(key=lambda s: (s["start"], s["priority"], s["label"]))
-    return slots
 
 # ---------- duty assignment to Victoria staff ----------
 
@@ -1213,55 +1202,6 @@ def _build_staff_for_assign(staff_list):
         enriched.append(s2)
     return enriched
 
-def _is_free_for(s, start, end):
-    for d in s["duties"]:
-        if not (end <= d["start"] or start >= d["end"]):
-            return False
-    return True
-
-def assign_victoria_duties(victoria_staff, cfg, include_night=False):
-    """
-    Attach a 'duties' list to each Victoria staff member.
-    Grade requirements are respected (CSA1-only duties).
-    Returns (enriched_staff, unassigned_slots).
-    """
-    staff = _build_staff_for_assign(victoria_staff)
-    slots = generate_victoria_duty_slots_full(
-        open_time="05:00",
-        close_time="00:00",
-        include_night=include_night,
-    )
-    unassigned = []
-
-    for slot in slots:
-        start, end = slot["start"], slot["end"]
-        need_csa1 = (slot["required_grade"] == "CSA1")
-
-        # find eligible staff
-        candidates = []
-        for s in staff:
-            if need_csa1 and s.get("grade", "").upper() != "CSA1":
-                continue
-            if not (s["start_min"] <= start and s["end_min"] >= end):
-                continue
-            if not _is_free_for(s, start, end):
-                continue
-            candidates.append(s)
-
-        if not candidates:
-            unassigned.append(slot)
-            continue
-
-        chosen = min(candidates, key=lambda s: (s["duty_load_min"], s["start_min"]))
-        chosen["duties"].append(slot)
-        chosen["duty_load_min"] += (end - start)
-
-    # sort each staff's duties by time
-    for s in staff:
-        s["duties"].sort(key=lambda d: d["start"])
-
-    return staff, unassigned
-
 
 # ================= Example =================
 if __name__ == "__main__":
@@ -1270,7 +1210,9 @@ if __name__ == "__main__":
     target_date = "Monday20October2025"   # or dynamically build from a datetime
     rows = extract_victoria_rows_from_text(pdf_path, target_date) 
     victoria = build_staff_from_pdf_rows(rows)
-    victoria, district, cardinal = split_by_duty_section(victoria)
+    print(f"DEBUG: Found {len(victoria)} total staff in PDF.")
+    all_staff_assigned = assign_victoria_duties_v2(victoria, cfg)
+    victoria, district, cardinal = split_by_duty_section(all_staff_assigned)
     print("Victoria:", len(victoria))
     print("District:", len(district))
     print("Cardinal:", len(cardinal))
