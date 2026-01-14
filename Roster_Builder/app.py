@@ -27,7 +27,7 @@ def main():
         start_column=GRID_CONFIG["start_column"],
         blocks_per_hour=GRID_CONFIG["blocks_per_hour"]
     )
-    assigned_staff = assign_victoria_duties_v2(all_staff, cfg)
+    assigned_staff = assign_victoria_duties_v2(all_staff, cfg, date_str= target_date)
     # Split Sections
     victoria, district, cardinal = split_by_duty_section(assigned_staff)
 

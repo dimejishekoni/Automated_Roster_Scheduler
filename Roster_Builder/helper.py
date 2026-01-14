@@ -1,10 +1,8 @@
 import math
 from config import GridConfig
-from datetime import time, datetime
-from openpyxl.styles import Border, Side, Alignment, PatternFill, Font
+from openpyxl.styles import Border, Side
 
 # ================= STRING & CLEANING UTILS =================
-
 def clean_merge_area(ws, min_row, min_col, max_row, max_col):
     """Safely removes merges in a range to prevent overlap errors."""
     ranges_to_remove = []
@@ -21,7 +19,6 @@ def normalize_string(s: str) -> str:
     return "".join(str(s).split())
 
 # ================= TIME & BLOCK MATH =================
-
 def hhmm_to_minutes(hhmm: str) -> int:
     h, m = map(int, hhmm.split(":"))
     return h * 60 + m
