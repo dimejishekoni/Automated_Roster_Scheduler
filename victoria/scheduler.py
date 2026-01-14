@@ -1,75 +1,10 @@
 import math
-import random  # <--- THIS WAS MISSING AND CAUSED THE FAILURE
-
-# ================= MOVED FROM ROSTER.PY =================
-
-DUTY_PRIORITY = {
-    "P3":          1,
-    "PTI WB":      2,
-    "PTI EB":      2,
-    "SATS WB":     3,
-    "SATS EB":     4,
-    "ESCALATOR":   5,
-    "VIP/MIP":     6,
-    "SECURITY":    7,
-}
-
-class GridConfig:
-    def __init__(self, start_hour=5, end_hour=25, start_column=6, blocks_per_hour=4):
-        self.start_hour = start_hour
-        self.end_hour = end_hour
-        self.start_column = start_column
-        self.blocks_per_hour = blocks_per_hour
-        self.meta_col_widths = (5.6, 8, 8, 14.5, 6.2)   # widths A..E
-
-    @property
-    def minutes_per_block(self): return 60 // self.blocks_per_hour
-
-    @property
-    def total_hours(self): return self.end_hour - self.start_hour
-
-    @property
-    def total_blocks(self): return self.total_hours * self.blocks_per_hour
-
-# ================= TIME HELPERS =================
-
-def hhmm_to_minutes(hhmm: str) -> int:
-    h, m = map(int, hhmm.split(":"))
-    return h * 60 + m
-
-def minutes_to_hhmm(m: int) -> str:
-    m %= 24 * 60
-    h = m // 60
-    mm = m % 60
-    return f"{h:02d}:{mm:02d}"
-
-def _to_minutes_since_start(hhmm: str, cfg: GridConfig) -> int:
-    h, m = map(int, hhmm.split(":"))
-    s = cfg.start_hour % 24
-    if h < s:  # 00:xx => next day
-        h += 24
-    return max(0, (h - cfg.start_hour) * 60 + m)
-
-def _block_index_start(hhmm: str, cfg: GridConfig) -> int:
-    return int(math.ceil(_to_minutes_since_start(hhmm, cfg) / cfg.minutes_per_block))
-
-def _block_index_end(hhmm: str, cfg: GridConfig, round_finish="ceil") -> int:
-    mins = _to_minutes_since_start(hhmm, cfg)
-    if round_finish == "floor":
-        return int(mins // cfg.minutes_per_block)
-    return int(math.ceil(mins / cfg.minutes_per_block))
-
-def _block_index_start_inclusive(hhmm: str, cfg: GridConfig) -> int:
-    mins = _to_minutes_since_start(hhmm, cfg)
-    return int(mins // cfg.minutes_per_block)
-
-def _duration_minutes(start_hhmm: str, finish_hhmm: str, cfg: GridConfig) -> int:
-    ms = _to_minutes_since_start(start_hhmm, cfg)
-    me = _to_minutes_since_start(finish_hhmm, cfg)
-    if me <= ms:
-        me += 24 * 60
-    return me - ms
-
+import random  
+from config import DUTY_PRIORITY
+from helper import (
+    hhmm_to_minutes, minutes_to_hhmm, to_minutes_since_start, 
+    block_index_start, block_index_end, duration_minutes
+)
 # ================= SCHEDULER LOGIC =================
 
 STATUS_OFF = 0
@@ -100,12 +35,12 @@ class RosterEngine:
             # --- STRICT ROUNDING LOGIC ---
             # Start: Round UP (math.ceil). 
             # 05:10 -> 05:15 block (05:00-05:15 is empty)
-            start_mins = _to_minutes_since_start(s["start_time"], self.cfg)
+            start_mins = to_minutes_since_start(s["start_time"], self.cfg)
             s_blk = int(math.ceil(start_mins / self.cfg.minutes_per_block))
             
             # End: Round DOWN (//). 
             # 00:50 -> 00:45 block (00:45-01:00 is empty)
-            end_mins = _to_minutes_since_start(s["finish_time"], self.cfg)
+            end_mins = to_minutes_since_start(s["finish_time"], self.cfg)
             e_blk = int(end_mins // self.cfg.minutes_per_block)
             # -----------------------------
             
@@ -157,45 +92,92 @@ class RosterEngine:
             timeline[b_idx] = status_code
 
     def allocate_breaks(self):
-        print("DEBUG: Allocating Breaks (30m Break + 30m CSSI)...")
+        print("DEBUG: Allocating Breaks (Target: 3h from Next Full Hour, Clumping Enabled)...")
         sorted_staff = sorted(self.staff_data.values(), key=lambda x: x["start_time"])
         assigned_ids = set()
         count_paired = 0
-
-        # --- CONFIGURATION: 1 Block = 15 Minutes ---
-        SEGMENT_LEN = 2  # 30 Minutes
-        TOTAL_LEN = 4    # 1 Hour (30m + 30m)
+        SEGMENT_LEN = 2 
+        TOTAL_LEN = 4    
 
         for s1 in sorted_staff:
             id1 = s1["id"]
             if id1 in assigned_ids: continue 
             
-            start_blk = _block_index_start_inclusive(s1["start_time"], self.cfg)
+            # --- 1. DURATION CHECK ---
+            s_min = to_minutes_since_start(s1["start_time"], self.cfg)
+            e_min = to_minutes_since_start(s1["finish_time"], self.cfg)
+            if e_min <= s_min: e_min += 24 * 60
             
-            # Target: 4 hours into shift
-            primary_window = range(start_blk + 16, start_blk + 21) 
-            secondary_window = range(start_blk + 12, start_blk + 16)
-            search_slots = list(primary_window) + list(secondary_window)
+            # Skip if shift is less than 5 hours (300 mins)
+            if (e_min - s_min) < 300:
+                print(f"  > Skipping {id1}: Short shift ({e_min - s_min}m)")
+                continue
+
+            # --- 2. EFFECTIVE START (Round UP to Next Hour) ---
+            # 05:10 -> 06:00. This is crucial to hitting the 09:00 target.
+            remainder = s_min % 60
+            if remainder == 0:
+                effective_start = s_min
+            else:
+                effective_start = s_min + (60 - remainder)
+
+            # --- 3. TARGET CALCULATION ---
+            # Standard: 3 Hours from Effective Start
+            # 06:00 + 3h = 09:00.
+            target_offset = 180 # 3 hours
             
+            # CSA1 Adjustment: If you want CSA1 to be later, uncomment this:
+            # if s1.get("grade") == "CSA1": target_offset = 240 # 4 hours
+
+            target_break_min = effective_start + target_offset
+            target_blk = int(math.ceil(target_break_min / self.cfg.minutes_per_block))
+            
+            # --- 4. SEARCH CANDIDATES ---
+            # Search +/- 1 hour around the target
+            window_start = target_blk - 4
+            window_end = target_blk + 5
+            
+            candidates = []
+            
+            for t in range(window_start, window_end):
+                if t % 2 != 0: continue # No :15 or :45
+                
+                # Priority 0: ON THE HOUR (Strict Preference)
+                if t % 4 == 0: priority = 0
+                else: priority = 1
+
+                # Distance from exact target
+                distance = abs(t - target_blk)
+                
+                candidates.append((t, priority, distance))
+            
+            # --- 5. SORTING (THE FIX) ---
+            # OLD WAY: Sorted by Load (Emptiest first) -> Caused splitting.
+            # NEW WAY: Sort by Priority & Distance ONLY.
+            # Result: Everyone tries for 09:00 first. If full, they go to 09:30.
+            candidates.sort(key=lambda x: (x[1], x[2]))
+            
+            search_slots = [c[0] for c in candidates]
+            
+            # --- 6. ASSIGNMENT ---
             partner_found = False
             for s2 in sorted_staff:
                 id2 = s2["id"]
                 if id1 == id2 or id2 in assigned_ids: continue
                 
-                # Look for a 1-hour slot (TOTAL_LEN) where both are free
+                # Partner Check
+                s2_s = to_minutes_since_start(s2["start_time"], self.cfg)
+                s2_e = to_minutes_since_start(s2["finish_time"], self.cfg)
+                if s2_e <= s2_s: s2_e += 24*60
+                if (s2_e - s2_s) < 300: continue
+
                 for t in search_slots:
                     if self.can_assign(id1, t, TOTAL_LEN, min_gateline=1):
                         if self.can_assign(id2, t, TOTAL_LEN, min_gateline=1):
-                            
-                            # --- ASSIGNMENT PATTERN ---
-                            # Staff 1: 30m Break -> 30m CSSI
                             self.commit_assignment(id1, t, SEGMENT_LEN, STATUS_BREAK, "Meal Break")
                             self.commit_assignment(id1, t+SEGMENT_LEN, SEGMENT_LEN, STATUS_CSSI, "CSSI")
-                            
-                            # Staff 2: 30m CSSI -> 30m Break
                             self.commit_assignment(id2, t, SEGMENT_LEN, STATUS_CSSI, "CSSI")
                             self.commit_assignment(id2, t+SEGMENT_LEN, SEGMENT_LEN, STATUS_BREAK, "Meal Break")
-                            
                             assigned_ids.add(id1)
                             assigned_ids.add(id2)
                             partner_found = True
@@ -203,17 +185,15 @@ class RosterEngine:
                             break 
                 if partner_found: break
             
-            # Solo Assignment (No partner found)
             if not partner_found:
                 for t in search_slots:
                     if self.can_assign(id1, t, TOTAL_LEN, min_gateline=1):
-                        # Default Pattern: Break -> CSSI
                         self.commit_assignment(id1, t, SEGMENT_LEN, STATUS_BREAK, "Meal Break")
                         self.commit_assignment(id1, t+SEGMENT_LEN, SEGMENT_LEN, STATUS_CSSI, "CSSI")
                         assigned_ids.add(id1)
                         break
-
         print(f"DEBUG: Breaks Assigned. {count_paired} Pairs formed.")
+
 
     def allocate_specialist_duties(self, duties_list):
         duties_list.sort(key=lambda x: x["priority"])
@@ -222,7 +202,7 @@ class RosterEngine:
         for duty in duties_list:
             if duty["required_grade"] != "CSA1": continue
             
-            start_b = _block_index_start_inclusive(minutes_to_hhmm(duty["start"]), self.cfg)
+            start_b = block_index_start(minutes_to_hhmm(duty["start"]), self.cfg)
             duration = (duty["end"] - duty["start"]) // 15
             
             candidates = []
@@ -241,55 +221,105 @@ class RosterEngine:
                     break 
         print(f"DEBUG: Specialist Duties Assigned: {count_assigned}")
 
-    # def allocate_general_duties(self, duties_list):
-    #     count_assigned = 0
-    #     for duty in duties_list:
-    #         if duty["required_grade"] == "CSA1": continue 
-            
-    #         start_b = _block_index_start_inclusive(minutes_to_hhmm(duty["start"]), self.cfg)
-    #         duration = (duty["end"] - duty["start"]) // 15
-            
-    #         candidates = []
-    #         for s_id, s_data in self.staff_data.items():
-    #             candidates.append((s_id, len(self.assignments[s_id])))
-            
-    #         # SHUFFLE ADDED HERE
-    #         random.shuffle(candidates)
-    #         candidates.sort(key=lambda x: x[1])
-            
-    #         for s_id, workload in candidates:
-    #             if self.can_assign(s_id, start_b, duration, min_gateline=1):
-    #                 self.commit_assignment(s_id, start_b, duration, STATUS_GENERAL, duty["label"])
-    #                 count_assigned += 1
-    #                 break
-    #     print(f"DEBUG: General Duties Assigned: {count_assigned}")
-
     def allocate_general_duties(self, duties_list):
-        print("DEBUG: Allocating General Duties (Security Check)...")
+        print("DEBUG: Allocating Security Checks (Smart Clustering)...")
         count_assigned = 0
         
-        # Sort duties by priority
-        duties_list.sort(key=lambda x: x["priority"])
+        # 1. Sort duties strictly by time so we build the day chronologically
+        duties_list.sort(key=lambda x: x["start"])
         
         for duty in duties_list:
             if duty["role"] != "SECURITY": continue 
             
-            # Calculate strict block index for duty
-            start_b = int(math.ceil(_to_minutes_since_start(minutes_to_hhmm(duty["start"]), self.cfg) / self.cfg.minutes_per_block))
+            # Start Block calculation
+            start_b = int(math.ceil(to_minutes_since_start(minutes_to_hhmm(duty["start"]), self.cfg) / self.cfg.minutes_per_block))
             duration = (duty["end"] - duty["start"]) // 15
             
-            candidates = []
+            # We will group candidates into 3 Priority Buckets
+            priority_extend = [] # Best: Extend current block (make it solid)
+            priority_new = []    # Good: First security duty of the day
+            priority_gap = []    # Okay: Second duty, but well spaced out
+            
             for s_id, s_data in self.staff_data.items():
-                candidates.append((s_id, len(self.assignments[s_id])))
+                # 1. Basic Availability Check
+                if not self.can_assign(s_id, start_b, duration, min_gateline=0):
+                    continue
+                    
+                matrix = self.matrix[s_id]
+                
+                # 2. Analyze History (Count existing "Clusters")
+                cluster_count = 0
+                last_security_end = -999
+                in_cluster = False
+                
+                # Scan from start of day up to NOW
+                for b in range(start_b):
+                    if matrix[b] == STATUS_SECURITY:
+                        last_security_end = b
+                        if not in_cluster:
+                            cluster_count += 1
+                            in_cluster = True
+                    else:
+                        in_cluster = False
+                
+                # 3. Check Context
+                # Are we extending the IMMEDIATE previous block?
+                is_extending = (matrix[start_b - 1] == STATUS_SECURITY)
+                
+                workload = len(self.assignments[s_id])
+                
+                # --- LOGIC GATES ---
+                
+                if is_extending:
+                    # Calculate current run length
+                    run_len = 0
+                    for k in range(start_b - 1, -1, -1):
+                        if matrix[k] == STATUS_SECURITY: run_len += 1
+                        else: break
+                    
+                    # CAP DURATION: Allow extending up to 1 Hour (4 blocks)
+                    # If they have done < 4 blocks, they are PRIORITY #1
+                    if run_len < 4:
+                        priority_extend.append((s_id, workload))
+                    else:
+                        # They hit the 1-hour limit. Stop extending.
+                        # They fall into "priority_gap", but since gap is 0, they fail.
+                        pass
+                        
+                elif cluster_count == 0:
+                    # They have done 0 security checks. PRIORITY #2
+                    priority_new.append((s_id, workload))
+                    
+                elif cluster_count == 1:
+                    # They have done 1 check. Check Spacing (e.g. 2 hours = 8 blocks)
+                    gap = start_b - last_security_end
+                    if gap >= 8:
+                        # Well spaced. PRIORITY #3
+                        priority_gap.append((s_id, workload))
+                    # Else: Gap too small, ignored.
+                
+                else:
+                    # Max 2 clusters reached. IGNORED.
+                    pass
+
+            # 4. Selection Strategy
+            # Helper to pick best from a list (Random shuffle for fairness, then least busy)
+            def select_best(candidate_list):
+                if not candidate_list: return None
+                random.shuffle(candidate_list)       # 1. Shuffle
+                candidate_list.sort(key=lambda x: x[1]) # 2. Least Workload
+                return candidate_list[0][0] # Return ID
+
+            # Try buckets in order
+            chosen_id = select_best(priority_extend)
+            if not chosen_id: chosen_id = select_best(priority_new)
+            if not chosen_id: chosen_id = select_best(priority_gap)
             
-            random.shuffle(candidates)         
-            candidates.sort(key=lambda x: x[1]) 
-            
-            for s_id, workload in candidates:
-                if self.can_assign(s_id, start_b, duration, min_gateline=1):
-                    self.commit_assignment(s_id, start_b, duration, STATUS_SECURITY, duty["label"])
-                    count_assigned += 1
-                    break
+            if chosen_id:
+                self.commit_assignment(chosen_id, start_b, duration, STATUS_SECURITY, duty["label"])
+                count_assigned += 1
+                
+        print(f"DEBUG: Security Duties Assigned: {count_assigned}")
 
     def get_updated_staff_list(self):
         output = []
