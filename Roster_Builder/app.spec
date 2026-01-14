@@ -2,7 +2,7 @@
 
 
 a = Analysis(
-    ['excel_auto_schedule.py'],
+    ['app.py'],
     pathex=[],
     binaries=[],
     datas=[],
@@ -22,7 +22,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='excel_auto_schedule',
+    name='app',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

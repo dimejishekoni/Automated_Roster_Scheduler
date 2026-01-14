@@ -5,8 +5,8 @@ from helper import (
     hhmm_to_minutes, minutes_to_hhmm, to_minutes_since_start, 
     block_index_start, block_index_end, duration_minutes
 )
-# ================= SCHEDULER LOGIC =================
 
+# ================= SCHEDULER LOGIC =================
 STATUS_OFF = 0
 STATUS_GATELINE = 1
 STATUS_BREAK = 2
@@ -33,13 +33,10 @@ class RosterEngine:
             txt_blocks = [""] * self.cfg.total_blocks 
             
             # --- STRICT ROUNDING LOGIC ---
-            # Start: Round UP (math.ceil). 
-            # 05:10 -> 05:15 block (05:00-05:15 is empty)
             start_mins = to_minutes_since_start(s["start_time"], self.cfg)
             s_blk = int(math.ceil(start_mins / self.cfg.minutes_per_block))
             
             # End: Round DOWN (//). 
-            # 00:50 -> 00:45 block (00:45-01:00 is empty)
             end_mins = to_minutes_since_start(s["finish_time"], self.cfg)
             e_blk = int(end_mins // self.cfg.minutes_per_block)
             # -----------------------------
@@ -65,8 +62,6 @@ class RosterEngine:
         return count
 
     def can_assign(self, staff_id, start_blk, duration_blocks, min_gateline=1):
-        # NOTE: Default min_gateline lowered to 1 to ensure assignments happen 
-        # even with low staff numbers.
         timeline = self.matrix.get(staff_id)
         if not timeline: return False
 
@@ -74,10 +69,6 @@ class RosterEngine:
             b_idx = b % self.cfg.total_blocks
             if timeline[b_idx] != STATUS_GATELINE:
                 return False
-            
-            # current_coverage = self.get_gateline_count(b_idx)
-            # if (current_coverage - 1) < min_gateline:
-            #     return False 
         return True
 
     def commit_assignment(self, staff_id, start_blk, duration_blocks, status_code, duty_label):
@@ -108,13 +99,11 @@ class RosterEngine:
             e_min = to_minutes_since_start(s1["finish_time"], self.cfg)
             if e_min <= s_min: e_min += 24 * 60
             
-            # Skip if shift is less than 5 hours (300 mins)
             if (e_min - s_min) < 300:
                 print(f"  > Skipping {id1}: Short shift ({e_min - s_min}m)")
                 continue
 
             # --- 2. EFFECTIVE START (Round UP to Next Hour) ---
-            # 05:10 -> 06:00. This is crucial to hitting the 09:00 target.
             remainder = s_min % 60
             if remainder == 0:
                 effective_start = s_min
@@ -122,18 +111,11 @@ class RosterEngine:
                 effective_start = s_min + (60 - remainder)
 
             # --- 3. TARGET CALCULATION ---
-            # Standard: 3 Hours from Effective Start
-            # 06:00 + 3h = 09:00.
             target_offset = 180 # 3 hours
-            
-            # CSA1 Adjustment: If you want CSA1 to be later, uncomment this:
-            # if s1.get("grade") == "CSA1": target_offset = 240 # 4 hours
-
             target_break_min = effective_start + target_offset
             target_blk = int(math.ceil(target_break_min / self.cfg.minutes_per_block))
             
             # --- 4. SEARCH CANDIDATES ---
-            # Search +/- 1 hour around the target
             window_start = target_blk - 4
             window_end = target_blk + 5
             
@@ -142,21 +124,15 @@ class RosterEngine:
             for t in range(window_start, window_end):
                 if t % 2 != 0: continue # No :15 or :45
                 
-                # Priority 0: ON THE HOUR (Strict Preference)
                 if t % 4 == 0: priority = 0
                 else: priority = 1
 
                 # Distance from exact target
                 distance = abs(t - target_blk)
-                
                 candidates.append((t, priority, distance))
             
             # --- 5. SORTING (THE FIX) ---
-            # OLD WAY: Sorted by Load (Emptiest first) -> Caused splitting.
-            # NEW WAY: Sort by Priority & Distance ONLY.
-            # Result: Everyone tries for 09:00 first. If full, they go to 09:30.
             candidates.sort(key=lambda x: (x[1], x[2]))
-            
             search_slots = [c[0] for c in candidates]
             
             # --- 6. ASSIGNMENT ---
@@ -165,7 +141,6 @@ class RosterEngine:
                 id2 = s2["id"]
                 if id1 == id2 or id2 in assigned_ids: continue
                 
-                # Partner Check
                 s2_s = to_minutes_since_start(s2["start_time"], self.cfg)
                 s2_e = to_minutes_since_start(s2["finish_time"], self.cfg)
                 if s2_e <= s2_s: s2_e += 24*60
@@ -236,23 +211,20 @@ class RosterEngine:
             duration = (duty["end"] - duty["start"]) // 15
             
             # We will group candidates into 3 Priority Buckets
-            priority_extend = [] # Best: Extend current block (make it solid)
-            priority_new = []    # Good: First security duty of the day
-            priority_gap = []    # Okay: Second duty, but well spaced out
+            priority_extend = []
+            priority_new = []
+            priority_gap = []    
             
             for s_id, s_data in self.staff_data.items():
-                # 1. Basic Availability Check
                 if not self.can_assign(s_id, start_b, duration, min_gateline=0):
                     continue
                     
                 matrix = self.matrix[s_id]
-                
-                # 2. Analyze History (Count existing "Clusters")
+
                 cluster_count = 0
                 last_security_end = -999
                 in_cluster = False
                 
-                # Scan from start of day up to NOW
                 for b in range(start_b):
                     if matrix[b] == STATUS_SECURITY:
                         last_security_end = b
@@ -262,8 +234,6 @@ class RosterEngine:
                     else:
                         in_cluster = False
                 
-                # 3. Check Context
-                # Are we extending the IMMEDIATE previous block?
                 is_extending = (matrix[start_b - 1] == STATUS_SECURITY)
                 
                 workload = len(self.assignments[s_id])
@@ -271,44 +241,30 @@ class RosterEngine:
                 # --- LOGIC GATES ---
                 
                 if is_extending:
-                    # Calculate current run length
                     run_len = 0
                     for k in range(start_b - 1, -1, -1):
                         if matrix[k] == STATUS_SECURITY: run_len += 1
                         else: break
-                    
-                    # CAP DURATION: Allow extending up to 1 Hour (4 blocks)
-                    # If they have done < 4 blocks, they are PRIORITY #1
                     if run_len < 4:
                         priority_extend.append((s_id, workload))
                     else:
-                        # They hit the 1-hour limit. Stop extending.
-                        # They fall into "priority_gap", but since gap is 0, they fail.
                         pass
                         
                 elif cluster_count == 0:
-                    # They have done 0 security checks. PRIORITY #2
                     priority_new.append((s_id, workload))
                     
                 elif cluster_count == 1:
-                    # They have done 1 check. Check Spacing (e.g. 2 hours = 8 blocks)
                     gap = start_b - last_security_end
                     if gap >= 8:
-                        # Well spaced. PRIORITY #3
-                        priority_gap.append((s_id, workload))
-                    # Else: Gap too small, ignored.
-                
+                        priority_gap.append((s_id, workload))                
                 else:
-                    # Max 2 clusters reached. IGNORED.
                     pass
 
-            # 4. Selection Strategy
-            # Helper to pick best from a list (Random shuffle for fairness, then least busy)
             def select_best(candidate_list):
                 if not candidate_list: return None
-                random.shuffle(candidate_list)       # 1. Shuffle
-                candidate_list.sort(key=lambda x: x[1]) # 2. Least Workload
-                return candidate_list[0][0] # Return ID
+                random.shuffle(candidate_list)       
+                candidate_list.sort(key=lambda x: x[1]) 
+                return candidate_list[0][0] 
 
             # Try buckets in order
             chosen_id = select_best(priority_extend)
