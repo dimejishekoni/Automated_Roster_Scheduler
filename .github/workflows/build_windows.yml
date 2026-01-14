@@ -25,7 +25,7 @@ jobs:
     - name: Build with PyInstaller
       run: |
         # Make sure your script name matches here!
-        pyinstaller --onefile --name roster_builder victoria/excel_auto_schedule.py
+        pyinstaller --onefile --name roster_builder victoria/app.py
 
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
