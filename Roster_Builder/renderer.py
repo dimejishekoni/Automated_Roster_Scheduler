@@ -5,7 +5,7 @@ from openpyxl.utils import get_column_letter
 from config import GridConfig
 from scheduler import (
     STATUS_GATELINE, STATUS_BREAK, STATUS_CSSI, STATUS_SECURITY,
-    STATUS_SPECIALIST, STATUS_GENERAL)
+    STATUS_SPECIALIST, STATUS_GENERAL, STATUS_PLATFORM)
 from config import PALETTES, COLORS, BLACK_THIN
 from helper import (clean_merge_area, calculate_hourly_counts,
                     block_index_start, block_index_end, duration_minutes, draw_section_outline)
@@ -115,13 +115,16 @@ def paint_shift(ws, row: int, section: str, s: dict, cfg: GridConfig):
     
     break_fill   = PatternFill("solid", start_color=COLORS["BREAK"])  # 60497A
     cssi_fill    = PatternFill("solid", start_color=COLORS["CSSI"])   # 9966FF
-    special_fill = PatternFill("solid", start_color=COLORS["DUTY"])
+    special_fill = PatternFill("solid", start_color=COLORS["YELLOW"])
     security_fill = PatternFill("solid", start_color=COLORS["SECURITY"]) # Red
     general_fill = PatternFill("solid", start_color=COLORS["GENERAL"])
-    
+    grey_fill = PatternFill("solid", start_color=COLORS["GREY"])
+    platform_fill = PatternFill("solid", start_color=COLORS["GREEN"])
     # Fonts
-    white_font = Font(size=8, bold=True, color="FFFFFF")
-    black_font = Font(size=8, bold=True, color="000000")
+    white_font = Font(size=8, bold=False, color="FFFFFF")
+    black_font = Font(size=8, bold=False, color="000000")
+    black_font_10 = Font(size=10, bold=False, color="000000")
+    black_font_platforms = Font(size=13, bold=True, color="000000")
 
 
     matrix = s.get("status_matrix")
@@ -147,8 +150,8 @@ def paint_shift(ws, row: int, section: str, s: dict, cfg: GridConfig):
                     
                 elif status == STATUS_CSSI:
                     cell.fill = cssi_fill
-                    cell.font = white_font # White looks good on 9966FF
-                    cell.value = "CSSI"         # <--- Hardcoded Fallback
+                    cell.font = white_font 
+                    cell.value = "CSSI"         
                     cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
                 
                 elif status == STATUS_SECURITY:
@@ -157,17 +160,28 @@ def paint_shift(ws, row: int, section: str, s: dict, cfg: GridConfig):
                     cell.value = "Security Check"
                     cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
 
-                    
+
+                elif status == STATUS_GENERAL:
+                    cell.fill = grey_fill           
+                    cell.font = black_font          
+                    cell.value = "Top of ESC 4-6"   
+                    cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+
                 elif status == STATUS_SPECIALIST:
                     cell.fill = special_fill
-                    
-                elif status == STATUS_GENERAL:
-                    cell.fill = general_fill
+                    cell.font = black_font_10
+                    cell.value = "VIP/MIP"
+
+                # --- NEW BLOCK FOR P1/P2/P3 ---
+                elif status == STATUS_PLATFORM:
+                    cell.fill = platform_fill      # COLORS["GREEN"]
+                    cell.font = black_font_platforms         # Black Text
                 
                 # If specific text exists (e.g. from Scheduler), overwrite the default
                 if text_matrix and b < len(text_matrix) and text_matrix[b]:
                     cell.value = text_matrix[b]
                     cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+
 
     else:
         # Fallback for staff without matrix
@@ -472,16 +486,16 @@ def add_victoria_right_legend_in_grid(ws, cfg, body_start: int, labels=None):
     """
     if labels is None:
         labels = [
-            ("TOP OF ESC\n4–6", COLORS["GREY"],   "AREA AT THE TOP OF ESC\n6", COLORS["GREY"]),
-            ("VIP/MIP",     COLORS["YELLOW"], "PERSON ALLOCATED TO ASSIST\nWITH VIP/MIPs", COLORS["YELLOW"]),
-            ("POM SERVICING", COLORS["ORANGE"], "SERVICE ALL POMS",           COLORS["ORANGE"]),
-            ("PLATFORM?",     COLORS["GREEN"],    "PLATFORM SATS",              COLORS["GREEN"]),
-            ("PTI",           COLORS["PEACH"],  "PTI DUTY",                   COLORS["PEACH"]),
+            ("TOP OF ESC\n4–6", COLORS["GREY"],     "AREA AT THE TOP OF ESC\n6", COLORS["GREY"]),
+            ("VIP/MIP",         COLORS["YELLOW"],   "PERSON ALLOCATED TO ASSIST\nWITH VIP/MIPs", COLORS["YELLOW"]),
+            ("POM SERVICING",   COLORS["ORANGE"],   "SERVICE ALL POMS",           COLORS["ORANGE"]),
+            ("PLATFORM",        COLORS["GREEN"],    "PLATFORM SATS",              COLORS["GREEN"]),
+            ("PTI",             COLORS["PEACH"],    "PTI DUTY",                   COLORS["PEACH"]),
         ]
 
     center = Alignment(horizontal="center", vertical="center", wrap_text=True)
     border = Border(left=BLACK_THIN, right=BLACK_THIN, top=BLACK_THIN, bottom=BLACK_THIN)
-    font   = Font(bold=True, size=8)
+    font   = Font(bold=False, size=8)
 
     legend_start_hour = cfg.end_hour - 3          
     hour_offset = legend_start_hour - cfg.start_hour
