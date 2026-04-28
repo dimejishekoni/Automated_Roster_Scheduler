@@ -32,28 +32,6 @@ def choose_fill_color(section: str, grade: str | None, start_hhmm: str, finish_h
         return light
     return deep if mins >= 465 else light
 
-# def draw_time_header(ws, top_row: int, cfg: GridConfig):
-#     """
-#     Draws a merged hour header row at 'top_row'.
-#     UPDATED: 
-#     1. Applies Thick Top/Bottom borders to Columns A-E so the line starts from the beginning.
-#     2. Iterates through Time columns to apply borders properly.
-#     """
-#     thick = Side(border_style="thick", color="000000")
-#     thin  = Side(border_style="thin",  color="000000")
-#     header_font = Font(bold=True, size=10)
-#     center = Alignment(horizontal="center", vertical="center")
-
-#     if cfg.start_column > 1:
-#         ws.merge_cells(start_row=top_row, start_column=1, end_row=top_row, end_column=cfg.start_column - 1)
-        
-#         for col in range(1, cfg.start_column):
-#             cell = ws.cell(row=top_row, column=col)
-            
-#             style_left = thick if col == 1 else None
-#             style_right = thick if col == (cfg.start_column - 1) else None
-            
-#             cell.border = Border(top=thick, bottom=thick, left=style_left, right=style_right)
 def draw_time_header(ws, top_row: int, cfg: GridConfig, date_str: str = None, section: str = None):
     """
     Draws a merged hour header row at 'top_row'.
