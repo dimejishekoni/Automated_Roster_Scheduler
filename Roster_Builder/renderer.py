@@ -9,6 +9,10 @@ from scheduler import (
 from config import PALETTES, COLORS, BLACK_THIN
 from helper import (clean_merge_area, calculate_hourly_counts,
                     block_index_start, block_index_end, duration_minutes, draw_section_outline)
+# Set back to True once the scheduler is reintroduced.
+SHOW_VICTORIA_DECORATIONS = False
+SHOW_SCHEDULED_DUTIES = False
+
 
 # ================= Colour choice (grade first, else duration) =================
 def choose_fill_color(section: str, grade: str | None, start_hhmm: str, finish_hhmm: str, cfg: GridConfig) -> str:
@@ -28,12 +32,33 @@ def choose_fill_color(section: str, grade: str | None, start_hhmm: str, finish_h
         return light
     return deep if mins >= 465 else light
 
-def draw_time_header(ws, top_row: int, cfg: GridConfig):
+# def draw_time_header(ws, top_row: int, cfg: GridConfig):
+#     """
+#     Draws a merged hour header row at 'top_row'.
+#     UPDATED: 
+#     1. Applies Thick Top/Bottom borders to Columns A-E so the line starts from the beginning.
+#     2. Iterates through Time columns to apply borders properly.
+#     """
+#     thick = Side(border_style="thick", color="000000")
+#     thin  = Side(border_style="thin",  color="000000")
+#     header_font = Font(bold=True, size=10)
+#     center = Alignment(horizontal="center", vertical="center")
+
+#     if cfg.start_column > 1:
+#         ws.merge_cells(start_row=top_row, start_column=1, end_row=top_row, end_column=cfg.start_column - 1)
+        
+#         for col in range(1, cfg.start_column):
+#             cell = ws.cell(row=top_row, column=col)
+            
+#             style_left = thick if col == 1 else None
+#             style_right = thick if col == (cfg.start_column - 1) else None
+            
+#             cell.border = Border(top=thick, bottom=thick, left=style_left, right=style_right)
+def draw_time_header(ws, top_row: int, cfg: GridConfig, date_str: str = None, section: str = None):
     """
     Draws a merged hour header row at 'top_row'.
-    UPDATED: 
-    1. Applies Thick Top/Bottom borders to Columns A-E so the line starts from the beginning.
-    2. Iterates through Time columns to apply borders properly.
+    If date_str + section are provided, also fills the top-left merged cell (A..E of top_row)
+    with that section's banner colour and writes the formatted date there.
     """
     thick = Side(border_style="thick", color="000000")
     thin  = Side(border_style="thin",  color="000000")
@@ -50,6 +75,15 @@ def draw_time_header(ws, top_row: int, cfg: GridConfig):
             style_right = thick if col == (cfg.start_column - 1) else None
             
             cell.border = Border(top=thick, bottom=thick, left=style_left, right=style_right)
+
+        # Section-coloured date banner in the top-left area.
+        if date_str and section and section in PALETTES:
+            pal = PALETTES[section]
+            tl = ws.cell(row=top_row, column=1)
+            tl.value = date_str
+            tl.fill = PatternFill("solid", start_color=pal["deep"], end_color=pal["deep"])
+            tl.font = Font(bold=True, size=12, color=pal["text"])
+            tl.alignment = center
 
     for h in range(cfg.total_hours):
         c0 = cfg.start_column + h * cfg.blocks_per_hour
@@ -130,7 +164,7 @@ def paint_shift(ws, row: int, section: str, s: dict, cfg: GridConfig):
     matrix = s.get("status_matrix")
     text_matrix = s.get("text_matrix") 
 
-    if matrix:
+    if matrix and SHOW_SCHEDULED_DUTIES:
         for b in range(cfg.total_blocks):
             col = cfg.start_column + b
             
@@ -539,7 +573,8 @@ def build_single_sheet(
     staff_district: list[dict],
     staff_cardinal: list[dict],
     cfg: GridConfig,
-    rows_per_section=(28, 28, 13)
+    rows_per_section=(28, 28, 13),
+    date_str : str = None,
 ):
     wb = Workbook()
     ws = wb.active
@@ -551,7 +586,9 @@ def build_single_sheet(
         [staff_victoria, staff_district, staff_cardinal], 
         cfg
     )
-    draw_time_header(ws, 1, cfg)
+    # draw_time_header(ws, 1, cfg)
+    draw_time_header(ws, 1, cfg, date_str=date_str, section="Victoria")
+
     draw_global_banners(ws, cfg)
     draw_meta_header(ws, row=6, cfg=cfg, hourly_counts=total_counts)
 
@@ -594,7 +631,7 @@ def build_single_sheet(
 
 
         # Extra notes ONLY for Victoria (placed inside the grid area)
-        if section_name == "Victoria":
+        if section_name == "Victoria" and SHOW_VICTORIA_DECORATIONS:
             add_victoria_cssi_note(ws, cfg, start_row, end_row)
             add_victoria_right_legend_in_grid(ws, cfg, start_row)
         top_style = "thin" if is_first else "thick"
@@ -606,10 +643,11 @@ def build_single_sheet(
     row_cursor = render_section("Victoria", staff_victoria, row_cursor, rows_per_section[0], custom_header_row=2)
     row_cursor += 1 
 
-    draw_time_header(ws, row_cursor, cfg)  
-    row_cursor += 1                        
+    # draw_time_header(ws, row_cursor, cfg, ) 
+    draw_time_header(ws, row_cursor, cfg, date_str=date_str, section="District")
+    row_cursor += 1                                        
 
-    draw_meta_header(ws, row_cursor, cfg)
+    draw_meta_header(ws, row=6, cfg=cfg)
     meta_start_dist = row_cursor 
     row_cursor += 1
 
@@ -617,8 +655,9 @@ def build_single_sheet(
     row_cursor += 1 
 
     # 3. Cardinal (Insert Time Header First)
-    draw_time_header(ws, row_cursor, cfg)  # Draw header at current cursor
-    row_cursor += 1                        # Step down 1 row
+    # 3. Cardinal (Insert Time Header First)
+    draw_time_header(ws, row_cursor, cfg, date_str=date_str, section="Cardinal")
+    row_cursor += 1                                      
     # Meta Header (Inserted Step)
     draw_meta_header(ws, row_cursor, cfg)
     meta_start_card = row_cursor

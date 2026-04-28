@@ -1,4 +1,6 @@
 from openpyxl.styles import Side
+import json
+from pathlib import Path
 
 # ================= 1. FILE PATHS =================
 PDF_PATH = "2025.10.25 VSOU SOS.pdf"      
@@ -77,26 +79,36 @@ DUTY_PRIORITY = {
 }
 
 
-#MAPPING
-DUTY_SECTION_MAP = {
+# Duty-code → section mapping is loaded from duty_sections.json so supervisors
+# can update routing without editing code.
+def _load_duty_section_map() -> dict[str, str]:
+    path = Path(__file__).parent / "duty_section.json"
+    if not path.exists():
+        raise FileNotFoundError(
+            f"{path} not found. Expected format: "
+            '{"Victoria": ["BN71", ...], "District": [...], "Cardinal": [...]}'
+        )
+    with path.open() as f:
+        data = json.load(f)
 
-    # Victoria
-    "BN71": "Victoria", "BN21": "Victoria", "BN73": "Victoria", "BN27": "Victoria", 
-    "BN28": "Victoria", "BN25": "Victoria", "BN26": "Victoria", "BN31": "Victoria", 
-    "BN32": "Victoria", "BN76": "Victoria", "BN78": "Victoria", "BN37": "Victoria", 
-    "BN38": "Victoria", "BN44": "Victoria", "BN39": "Victoria", "BN40": "Victoria", 
-    "BN80": "Victoria", 
-    
-    # District
-    "BN72": "District", "BN22": "District", "BN75": "District", "BN74": "District", 
-    "BN29": "District", "BN33": "District", "BN77": "District", "BN34": "District", 
-    "BN81": "District", "BN43": "District", "BN79": "District", "BN45": "District", 
-    "BN41": "District", "BN82": "District", 
-    
-    # Cardinal
-    "BN23": "Cardinal", "BN24": "Cardinal", "BN30": "Cardinal", "BN36": "Cardinal", 
-    "BN42": "Cardinal", "BN35": "Cardinal"
-}
+    code_to_section: dict[str, str] = {}
+    duplicates: list[tuple[str, str, str]] = []
+    for section, codes in data.items():
+        for raw in codes:
+            code = raw.strip().upper()
+            if code in code_to_section and code_to_section[code] != section:
+                duplicates.append((code, code_to_section[code], section))
+            code_to_section[code] = section
+
+    if duplicates:
+        print(f"WARNING: {len(duplicates)} duty code(s) appear in duty_section.json more than once:")
+        for code, first, second in duplicates:
+            print(f"  - {code}: listed under both {first!r} and {second!r} (using {second!r})")
+
+    return code_to_section
+
+
+DUTY_SECTION_MAP = _load_duty_section_map()
 
 class GridConfig:
     def __init__(self, start_hour=5, end_hour=25, start_column=6, blocks_per_hour=4):

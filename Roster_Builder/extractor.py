@@ -55,8 +55,8 @@ def extract_victoria_rows_from_text(pdf_path: str, date_str: str | None = None):
                 continue
 
             # --- 2. LOCATION FILTER ---
-            if "LOCATION:VICTORIA" not in clean_text and "DUTIESFOR:VICTORIA" not in clean_text:
-                 if "VICTORIA" not in clean_text:
+            if "LOCATIONVICTORIA" not in clean_text and "DUTIESFORVICTORIA" not in clean_text:
+                if "VICTORIA" not in clean_text:
                     continue
 
             lines = text.splitlines()
@@ -105,7 +105,8 @@ def extract_victoria_rows_from_text(pdf_path: str, date_str: str | None = None):
     return rows
 
 def build_staff_from_pdf_rows(rows, staff_db):
-    victoria = []
+    all_staff = []
+    missing_from_db = []
 
     for row in rows:
         if not row or len(row) < 5: continue
@@ -114,32 +115,40 @@ def build_staff_from_pdf_rows(rows, staff_db):
         duty_desc = (row[1] or "").strip()
         start_val = (row[2] or "").strip()
         end_val   = (row[3] or "").strip()
-        name_val  = (row[4] or "").strip()
+        name_raw  = (row[4] or "").strip()
 
-        # Double check: Skip Supervisors (CSS/CSM) or GPK if they sneaked in
         if "CSS" in duty_desc or "CSM" in duty_desc: continue
         if "GPK" in duty_desc: continue
 
-        grade     = parse_grade(duty_desc)   
+        name_val = re.split(r"\s{2,}", name_raw)[0].strip()
+
+        grade     = parse_grade(duty_desc)
         start_str = excel_time_to_str(start_val)
         end_str   = excel_time_to_str(end_val)
 
         clean_name = normalize_name(name_val)
         db_info = staff_db.get(clean_name, {})
-        
-        radio_val = db_info.get("radio", "")
-        is_restricted = db_info.get("restricted", False)
+        if not db_info:
+            missing_from_db.append((duty_code, name_val))
+
+        display_name = name_val.split(",", 1)[0].strip()
 
         staff_entry = {
             "id": duty_code,
-            "name": name_val,
-            "radio": radio_val,
+            "name": display_name,
+            "radio": db_info.get("radio", ""),
             "start_time": start_str,
             "finish_time": end_str,
             "grade": grade,
             "duty_desc": duty_desc,
-            "is_restricted": is_restricted
+            "is_restricted": db_info.get("restricted", False),
         }
-        victoria.append(staff_entry)
 
-    return victoria
+        all_staff.append(staff_entry)
+
+    if missing_from_db:
+        print(f"WARNING: {len(missing_from_db)} staff not found in Staff Database (no radio/restriction info):")
+        for code, name in missing_from_db:
+            print(f"  - {code}  {name!r}")
+
+    return all_staff

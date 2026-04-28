@@ -1,10 +1,10 @@
 import pandas as pd
-import os
+import os, re
 from config import DUTY_SECTION_MAP
 
 def normalize_name(name_str):
     if not isinstance(name_str, str): return ""
-    return name_str.replace(" ", "").upper()
+    return re.sub(r"[^A-Z0-9]", "", name_str.upper())
 
 def load_staff_database(db_path):
     staff_db = {}
@@ -53,26 +53,29 @@ def load_staff_database(db_path):
 
     return staff_db
 
+
 def split_by_duty_section(staff_list: list[dict]):
     """
-    Splits the staff list into 3 sections based STRICTLY on DUTY_SECTION_MAP.
+    Splits the staff list into 3 sections using DUTY_SECTION_MAP.
+    Any duty code not in the map is routed to Victoria AND surfaced as a warning
+    so supervisors know the map needs updating.
     """
     victoria = []
     district = []
     cardinal = []
+    unmatched = []  # (duty_code, name) pairs
 
     print(f"DEBUG: Splitting {len(staff_list)} staff using the Map...")
 
     for s in staff_list:
         raw_id = s.get("id", "")
         code = raw_id.strip().upper()
-        
+
         section = DUTY_SECTION_MAP.get(code)
-        
-        if not section:
+        if section is None:
+            unmatched.append((code, s.get("name", "")))
             section = "Victoria"
 
-        # 4. Sort into lists
         if section == "Victoria":
             victoria.append(s)
         elif section == "District":
@@ -82,10 +85,16 @@ def split_by_duty_section(staff_list: list[dict]):
         else:
             victoria.append(s)
 
-    # 5. Sort each section by Start Time
     victoria.sort(key=lambda x: x["start_time"])
     district.sort(key=lambda x: x["start_time"])
     cardinal.sort(key=lambda x: x["start_time"])
 
     print(f"DEBUG: Split Results -> Vic: {len(victoria)}, Dist: {len(district)}, Card: {len(cardinal)}")
+
+    if unmatched:
+        print(f"WARNING: {len(unmatched)} duty code(s) not in DUTY_SECTION_MAP — defaulted to Victoria:")
+        for code, name in unmatched:
+            print(f"  - {code!r}  ({name})")
+        print("  -> Update DUTY_SECTION_MAP in config.py to route these correctly.")
+
     return victoria, district, cardinal
